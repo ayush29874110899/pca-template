@@ -1,0 +1,1353 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Amazon Transcribe Post Call Analytics - PCA (v0.7.10) (uksb-1sn29lk73, SO9071)
+
+Parameters:
+
+  AdminUsername:
+    Type: String
+    Default: "admin"
+    Description: (Required) Username for admin user
+    
+  AdminEmail:
+      Type: String
+      Description: >-
+        (Required) Email address for the admin user. Will be used for logging in and for setting the admin password. 
+        This email will receive the temporary password for the admin user.
+      AllowedPattern: ".+\\@.+\\..+"
+      ConstraintDescription: Must be valid email address eg. johndoe@example.com
+
+  BulkUploadBucketName:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) Existing bucket where files can be dropped, and a secondary Step Function can be 
+      manually enabled to drip feed them into the system. 
+      Leave blank to automatically create new bucket.
+
+  BulkUploadMaxDripRate:
+    Type: String
+    Default: "25"
+    Description: Maximum number of files that the bulk uploader will move to the PCA source bucket in one pass
+
+  BulkUploadMaxTranscribeJobs:
+    Type: String
+    Default: "50"
+    Description: Number of concurrent Transcribe jobs (executing or queuing) where bulk upload will pause
+
+  ComprehendLanguages:
+    Type: String
+    Default: de | en | es | it | pt | fr | ja | ko | hi | ar | zh | zh-TW
+    Description: Languages supported by Comprehend's standard calls, separated by " | "
+
+  ContentRedactionLanguages:
+    Type: String
+    Default: en-US
+    Description: Languages supported by Transcribe's Content Redaction feature, separated by " | "
+
+  ConversationLocation:
+    Type: String
+    AllowedPattern: "[+-_\/a-zA-Z0-9]*"
+    Default: America/New_York
+    Description: Name of the timezone location for the call source - this is the TZ database name from https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+
+  EntityRecognizerEndpoint:
+    Type: String
+    Default: undefined
+    Description: Name of the custom entity recognizer for Amazon Comprehend (not including language suffix, e.g. -en). If one cannot be found then simple entity string matching is attempted instead
+
+  EntityStringMap:
+    Type: String
+    Default: sample-entities.csv
+    Description: Basename of a CSV file containing item/Entity maps for when we don't have data for Comprehend Custom Entities (not including language suffix, e.g. -en)
+
+  EntityThreshold:
+    Type: String
+    Default: "0.6"
+    Description: Confidence threshold where we accept the custom entity detection result
+
+  EntityTypes:
+    Type: String
+    Default: PERSON | LOCATION | ORGANIZATION | COMMERCIAL_ITEM | EVENT | DATE | QUANTITY | TITLE
+    Description: Entity types supported by Comprehend's standard entity detection, separated by " | "
+
+  InputBucketAudioPlayback:
+    Type: String
+    Default: playbackAudio
+    Description: Folder that holds the audio files to playback in the browser.
+
+  InputBucketFailedTranscriptions:
+    Type: String
+    Default: failedAudio
+    Description: Folder that holds the audio files that for some reason failed transcription
+
+  InputBucketName:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) Existing bucket holding all audio files for the system. 
+      Leave blank to automatically create new bucket with intelligent tiering storage and automated retention policy.
+
+  InputBucketRawAudio:
+    Type: String
+    Default: originalAudio
+    Description: Prefix/Folder that holds the audio files to be ingested into the system
+
+  InputBucketOrigTranscripts:
+    Type: String
+    Default: originalTranscripts
+    Description: >
+      Folder that holds Transcripts from other applications (e.g. Live Call Analytics) that are to be
+      processed as if PCA had processed that audio
+
+  MaxSpeakers:
+    Type: String
+    Default: "2"
+    Description: Maximum number of speakers that are expected on a call
+
+  MinSentimentNegative:
+    Type: String
+    Default: "2.0"
+    Description: Minimum sentiment level required to declare a phrase as having negative sentiment, in the range 0.0-5.0
+
+  MinSentimentPositive:
+    Type: String
+    Default: "2.0"
+    Description: Minimum sentiment level required to declare a phrase as having positive sentiment, in the range 0.0-5.0
+
+  OutputBucketName:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) Existing bucket where Transcribe output files are delivered. 
+      Leave blank to automatically create new bucket with intelligent tiering storage and automated retention policy.
+
+  OutputBucketTranscribeResults:
+    Type: String
+    Default: transcribeResults
+    Description: Folder within the output S3 bucket where Transcribe results are written
+
+  OutputBucketParsedResults:
+    Type: String
+    Default: parsedFiles
+    Description: Folder within the output S3 bucket where parsed results are written
+
+  SpeakerNames:
+    Type: String
+    Default: Customer | Agent
+    AllowedValues:
+        - Customer | Agent
+        - Agent | Customer
+    Description: Speaker label assignment order
+
+  SpeakerSeparationType:
+    Type: String
+    Default: channel
+    AllowedValues:
+        - speaker
+        - channel
+    Description: Separation mode diarization - typically speaker for mono files, channel for stereo files
+
+  StepFunctionName:
+    Type: String
+    AllowedPattern: "[-_a-zA-Z0-9]*"
+    Default: PostCallAnalyticsWorkflow
+    Description: Name of Step Functions workflow that orchestrates this process
+    
+  BulkUploadStepFunctionName:
+    Type: String
+    AllowedPattern: "[-_a-zA-Z0-9]*"
+    Default: BulkUploadWorkflow
+    Description: Name of Step Functions workflow that orchestrates the bulk import process
+    
+  SupportFilesBucketName:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) Existing bucket that hold supporting files, such as the  file-based
+      entity recognition mapping files.  Leave blank to automatically create new bucket.
+
+  TranscribeLanguages:
+    Type: String
+    Default: en-US
+    Description: Language to be used for Transcription - multiple entries separated by " | " will trigger Language Detection
+
+  VocabFilterMode:
+    Type: String
+    Default: mask
+    AllowedValues:
+        - mask
+        - remove
+    Description: The mode to use for vocabulary filtering - must be one of mask or remove (tag is not supported)
+
+  VocabFilterName:
+    Type: String
+    Default: undefined
+    Description: Name of the vocabulary filter to use for Transcribe (not including language suffix, e.g. -en)
+
+  VocabularyName:
+    Type: String
+    Default: undefined
+    Description: Name of the custom vocabulary to use for Transcribe (omit the language suffix, e.g. -en-US)
+
+  CustomLangModelName:
+    Type: String
+    Default: undefined
+    Description: Name of the custom language model to use for Transcribe (omit the language suffix, e.g. -en-US)
+
+  TranscribeApiMode:
+    Type: String
+    Default: analytics
+    AllowedValues:
+        - standard
+        - analytics
+    Description: Set the default operational mode for Transcribe
+
+  TelephonyCTRType:
+    Type: String
+    Default: none
+    AllowedValues:
+        - none
+        - genesys
+    Description: Type of telephony system that will deliver Contact Trace Record files along with the audio recordings
+
+  TelephonyCTRFileSuffix:
+    Type: String
+    Default: "_metadata.json | _call_metadata.json"
+    Description: >
+      File name suffixes for the CTR file(s) associated with the chosen telephony type, separated by " | ".
+      For Genesys, this needs two entries: one for the conversation CTR file, and one for the call-specific file.
+      Other telephony systems may need fewer or additional entries, please consult the documentation.
+
+  CallRedactionTranscript:
+    Type: String
+    Default: true
+    AllowedValues:
+        - true
+        - false
+    Description: Enable or disable Transcribe's redaction feature
+
+  CallRedactionAudio:
+    Type: String
+    Default: true
+    AllowedValues:
+        - true
+        - false
+    Description: When transcript redaction is enabled in Call Analytics, only allow playback of the redacted audio
+
+  ffmpegDownloadUrl:
+    Type: String
+    Default: http://www.johnvansickle.com/ffmpeg/old-releases/ffmpeg-4.4-amd64-static.tar.xz
+    Description: URL for ffmpeg binary distribution tar file download - see https://www.johnvansickle.com/ffmpeg/
+
+  loadSampleAudioFiles:
+    Type: String
+    Default: false
+    AllowedValues:
+        - true
+        - false
+    Description: Set to true to automatically ingest sample audio files.
+    
+  FilenameDatetimeRegex:
+    Type: String
+    Default: '(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})'
+    Description: >
+      Regular Expression (regex) used to parse call Date/Time from audio filenames. 
+      Each datetime field (year, month, etc.) must be matched using a separate parenthesized group in the regex. 
+      Example: the regex '(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})' parses
+      the filename: CallAudioFile-2021-12-01T07-55-51.wav into a value list: [2021, 12, 01, 07, 55, 51]
+      The next parameter, FilenameDatetimeFieldMap, maps the values to datetime field codes.
+      If the filename doesn't match the regex pattern, the current time is used as the call timestamp.
+
+  FilenameDatetimeFieldMap:
+    Type: String
+    Default: '%Y %m %d %H %M %S'
+    Description: >
+      Space separated ordered sequence of time field codes as used by Python's datetime.strptime() function. 
+      Each field code refers to a corresponding value parsed by the regex parameter filenameTimestampRegex. 
+      Example: the mapping '%Y %m %d %H %M %S' assembles the regex output values [2021, 12, 01, 07, 55, 51]
+      into the full datetime: '2021-12-01 07:55:51'.  
+      If the field map doesn't match the value list parsed by the regex, then the current time is used as the call timestamp.
+
+  FilenameGUIDRegex:
+    Type: String
+    Default: '_GUID_(.*?)_'
+    Description: >
+      Regular Expression (regex) used to parse call GUID from audio filenames. 
+      The GUID value must be matched using one or more parenthesized groups in the regex. 
+      Example: the regex '_GUID_(.*?)_' parses
+      the filename: AutoRepairs1_CUST_12345_GUID_2a602c1a-4ca3-4d37-a933-444d575c0222_AGENT_BobS_DATETIME_07.55.51.067-09-16-2021.wav 
+      to extract the GUID value '2a602c1a-4ca3-4d37-a933-444d575c0222'.
+
+  FilenameAgentRegex:
+    Type: String
+    Default: '_AGENT_(.*?)_'
+    Description: >
+      Regular Expression (regex) used to parse call AGENT from audio filenames. 
+      The AGENT value must be matched using one or more parenthesized groups in the regex. 
+      Example: the regex '_AGENT_(.*?)_' parses
+      the filename: AutoRepairs1_CUST_12345_GUID_2a602c1a-4ca3-4d37-a933-444d575c0222_AGENT_BobS_DATETIME_07.55.51.067-09-16-2021.wav 
+      to extract the AGENT value 'BobS'. 
+  
+  FilenameCustRegex:
+    Type: String
+    Default: '_CUST_(.*?)_'
+    Description: >
+      Regular Expression (regex) used to parse Customer from audio filenames. 
+      The customer id value must be matched using one or more parenthesized groups in the regex. 
+      Example: the regex '_CUST_(.*?)_' parses
+      the filename: AutoRepairs1_CUST_12345_GUID_2a602c1a-4ca3-4d37-a933-444d575c0222_AGENT_BobS_DATETIME_07.55.51.067-09-16-2021.wav 
+      to extract the Customer value '12345'.
+
+  EnableGui:
+    Type: String
+    Default: "true"
+    AllowedValues:
+        - "true"
+        - "false"
+    Description: Optionally disable the web GUI that comes with this solution, to deploy server components only.
+  
+  EnableTranscriptKendraSearch:
+    Type: String
+    Default: 'No'
+    AllowedValues:
+        - 'No'
+        - 'Yes, create new Kendra Index (Developer Edition)'
+        - 'Yes, create new Kendra Index (Enterprise Edition)'
+    Description: Optionally make call transcripts searchable, using Amazon Kendra. If enabled, EnableGui (above) must also be set to true.
+
+  QueryCapacityUnits:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 100
+    Description: >
+      When Kendra Index (Enterprise Edition) is enabled, the amount of extra query capacity for an index 
+      and GetQuerySuggestions capacity. A single extra capacity unit for an index provides 0.1 queries 
+      per second or approximately 8,000 queries per day. You can add up to 100 extra capacity units.
+
+  StorageCapacityUnits:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 100
+    Description: >
+      When Kendra Index (Enterprise Edition) is enabled, the amount of extra storage capacity for an index. 
+      A single capacity unit provides 30 GB of storage space or 100,000 documents, whichever is reached 
+      first. You can add up to 100 extra capacity units.
+
+  QueryCapacityUnits:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 100
+    Description: >
+      When Kendra Index (Enterprise Edition) is enabled, the amount of extra query capacity for an index 
+      and GetQuerySuggestions capacity. A single extra capacity unit for an index provides 0.1 queries 
+      per second or approximately 8,000 queries per day. You can add up to 100 extra capacity units.
+
+  StorageCapacityUnits:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 100
+    Description: >
+      When Kendra Index (Enterprise Edition) is enabled, the amount of extra storage capacity for an index. 
+      A single capacity unit provides 30 GB of storage space or 100,000 documents, whichever is reached 
+      first. You can add up to 100 extra capacity units.
+
+  RetentionDays:
+    Type: Number
+    Default: 365
+    AllowedValues:
+      - 30
+      - 60
+      - 90
+      - 180
+      - 365
+      - 730
+      - 1460
+    Description: >
+      When using auto-provisioned S3 buckets, your audio files and associated call analysis data will be 
+      automatically and permanently deleted after the specified number of retention days. The application
+      does not currently archive recordings or call data.
+
+  Environment:
+    Description: The type of environment to tag your infrastructure with. You can specify DEV (development), TEST (test), or PROD (production).
+    Type: String
+    AllowedValues:
+      - DEV
+      - TEST
+      - PROD
+    Default: PROD
+    
+  DatabaseName:
+    Type: String
+    Default: 'pca'
+    Description: Glue catalog database name used to contain tables/views for SQL integration.
+
+  EnablePcaDashboards:
+    Type: String
+    Default: 'No'
+    AllowedValues:
+        - 'No'
+        - 'Yes'
+    Description: >
+      Optionally deploy advanced analytics pipeline and Amazon QuickSight dashboards. 
+      IMPORTANT: Your Amazon QuickSight account MUST be enabled before deploying this stack. See http://www.amazon.com/pca-dashboards for additional 
+      steps required in Amazon QuickSight to (1) enable S3 access to PCA OutputBucket and (2) share dashboard and analytics assets.
+
+  GenAIQuery:
+    Default: 'BEDROCK'
+    Type: String
+    AllowedValues:
+      - 'DISABLED'
+      - 'BEDROCK'
+      - 'ANTHROPIC'
+    Description: >
+      If enabled, gives the ability to query an individual call for information. 
+      The BEDROCK option requires you to choose one of the supported model IDs from the provided list (GenAIQueryBedrockModelId).
+      You must also accept access to that model in the Amazon Bedrock > Model Access console.
+      The ANTHROPIC option is a third party service, and you must enter your Anthropic API key in the 
+      Third Party LLM API Key section.
+
+  GenAIQueryBedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-haiku-20240307-v1:0
+    AllowedValues:
+      - anthropic.claude-3-haiku-20240307-v1:0
+      - anthropic.claude-3-sonnet-20240229-v1:0
+      - amazon.titan-text-express-v1
+      - anthropic.claude-v1
+      - anthropic.claude-instant-v1
+      - anthropic.claude-v2
+    Description: (Optional) If 'GenAIQuery' is BEDROCK, which Bedrock model to use.
+
+  CallSummarization:
+    Default: 'BEDROCK'
+    Type: String
+    AllowedValues:
+      - 'DISABLED'
+      - 'BEDROCK+TCA'
+      - 'BEDROCK'
+      - 'TCA-ONLY'
+      - 'SAGEMAKER'
+      - 'ANTHROPIC'
+      - 'LAMBDA'
+    Description: >
+      Set to enable call summarization by a Large Language Model. 
+      The BEDROCK+TCA will use Transcribe Call Analytics for summarization and Bedrock for other analytics, and is available only for English.
+      The BEDROCK option requires you to choose one of the supported model IDs from the provided list (SummarizationBedrockModelId).
+      You must also accept access to that model in the Amazon Bedrock > Model Access console.
+      The TCA-ONLY option will not use Bedrock, but will only use Transcribe Call Analytics summarization, and is available only for English.
+      The SAGEMAKER option uses a SageMaker endpoint with the pretrained bart-large-cnn-samsum model with a ml.m5.xlarge instance type.  
+      The LAMBDA option requires you to provide a function ARN below. 
+      The ANTHROPIC option is a third party service, and you must enter your Anthropic API key in the Third Party LLM API Key section. 
+
+  SummarizationBedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-haiku-20240307-v1:0
+    AllowedValues:
+      - anthropic.claude-3-haiku-20240307-v1:0
+      - anthropic.claude-3-sonnet-20240229-v1:0
+      - amazon.titan-text-express-v1
+      - anthropic.claude-v1
+      - anthropic.claude-instant-v1
+      - anthropic.claude-v2
+    Description: (Optional) If 'CallSummarization' is BEDROCK, which Bedrock model to use. 
+
+  SummarizationSageMakerInitialInstanceCount:
+    Type: Number
+    MinValue: 0
+    Default: 1
+    Description: >
+      (Optional) If 'CallSummarization' is SAGEMAKER, provide initial instance count. Set to '0' to enable Serverless Inference (for cold-start delay tolerant deployments only).
+
+  SummarizationLLMThirdPartyApiKey:
+    Type: String
+    Description: >
+      (Optional) If 'CallSummarization' or 'GenAIQuery' is ANTHROPIC, enter the provider API Key. ** Data will leave your AWS account **
+    Default: undefined
+    NoEcho: true
+
+  SummarizationLambdaFunctionArn:
+    Default: ''
+    Type: String
+    AllowedPattern: '^(|arn:aws:lambda:.*)$'
+    Description: >
+      (Optional) If 'CallSummarization' is LAMBDA, provide ARN for a Lambda function.
+
+Metadata:
+    AWS::CloudFormation::Interface:
+        ParameterGroups:
+            - Label:
+                default: Admin User
+              Parameters:
+                  - AdminUsername
+                  - AdminEmail
+            - Label:
+                default: Sample Data
+              Parameters:
+                  - loadSampleAudioFiles
+            - Label:
+                default: Enable Call Transcript Search
+              Parameters:
+                  - EnableGui
+                  - EnableTranscriptKendraSearch
+            - Label:
+                default: Call Summarization
+              Parameters:
+                - CallSummarization
+                - SummarizationBedrockModelId
+                - SummarizationSageMakerInitialInstanceCount 
+                - SummarizationLambdaFunctionArn
+            - Label:
+                default: Third Party LLM API Key
+              Parameters:
+                - SummarizationLLMThirdPartyApiKey
+            - Label:
+                default: Generative AI Query
+              Parameters:
+                - GenAIQuery
+                - GenAIQueryBedrockModelId
+            - Label:
+                default: Advanced analytics and reporting
+              Parameters:
+                  - EnablePcaDashboards
+                  - DatabaseName
+            - Label:
+                default: S3 Bucket Names and Retention Policy
+              Parameters:
+                  - InputBucketName
+                  - BulkUploadBucketName
+                  - OutputBucketName
+                  - SupportFilesBucketName
+                  - RetentionDays
+            - Label:
+                default: S3 bucket prefixes
+              Parameters:
+                  - InputBucketFailedTranscriptions
+                  - InputBucketRawAudio
+                  - InputBucketOrigTranscripts
+                  - InputBucketAudioPlayback
+                  - OutputBucketParsedResults
+                  - OutputBucketTranscribeResults
+            - Label:
+                default: Filename metadata parsing
+              Parameters:
+                  - FilenameDatetimeRegex
+                  - FilenameDatetimeFieldMap
+                  - FilenameGUIDRegex
+                  - FilenameAgentRegex
+                  - FilenameCustRegex
+            - Label:
+                default: Transcription
+              Parameters:
+                  - TranscribeApiMode
+                  - TranscribeLanguages
+                  - VocabFilterMode
+                  - VocabFilterName
+                  - VocabularyName
+                  - CustomLangModelName
+                  - SpeakerSeparationType
+                  - SpeakerNames
+                  - MaxSpeakers
+                  - CallRedactionTranscript
+                  - CallRedactionAudio
+                  - ContentRedactionLanguages
+            - Label:
+                default: Telephony system
+              Parameters:
+                  - TelephonyCTRType
+                  - TelephonyCTRFileSuffix
+            - Label:
+                default: Entity detection
+              Parameters:
+                  - ComprehendLanguages
+                  - EntityThreshold
+                  - EntityTypes
+                  - EntityRecognizerEndpoint
+                  - EntityStringMap
+            - Label:
+                default: Sentiment detection
+              Parameters:
+                  - MinSentimentNegative
+                  - MinSentimentPositive
+            - Label:
+                default: Bulk upload
+              Parameters:
+                - BulkUploadMaxDripRate
+                - BulkUploadMaxTranscribeJobs
+                - BulkUploadStepFunctionName
+            - Label:
+                default: Miscellaneous
+              Parameters:
+                - ConversationLocation
+                - Environment
+                - StepFunctionName
+                - ffmpegDownloadUrl 
+
+Conditions:
+  ShouldCreateBulkUploadBucket: !Equals [!Ref BulkUploadBucketName, '']
+  ShouldCreateInputBucket: !Equals [!Ref InputBucketName, '']
+  ShouldCreateOutputBucket: !Equals [!Ref OutputBucketName, '']
+  ShouldCreateSupportFilesBucket: !Equals [!Ref SupportFilesBucketName, '']
+  ShouldEnableGui: !Not [!Equals [!Ref EnableGui, "false"]]
+  ShouldEnableKendraSearch: !Not [!Equals [!Ref EnableTranscriptKendraSearch, 'No']]
+  ShouldCreateKendraIndexDeveloperEdition: !Equals [!Ref EnableTranscriptKendraSearch, 'Yes, create new Kendra Index (Developer Edition)']
+  ShouldDeployPcaDashboards: !Equals [!Ref EnablePcaDashboards, 'Yes']
+  ShouldLoadSampleFiles: !Equals [!Ref loadSampleAudioFiles, 'true']
+  ShouldDeployBedrockBoto3Layer: !Or [
+    !Equals [!Ref CallSummarization, 'BEDROCK'], 
+    !Equals [!Ref CallSummarization, 'BEDROCK+TCA'], 
+    !Equals [!Ref CallSummarization, 'TCA-ONLY'], 
+    !Equals [!Ref GenAIQuery, 'BEDROCK'],
+  ]
+  ShouldDeployLLMThirdPartyApiKey: !And [!Not [!Equals [!Ref SummarizationLLMThirdPartyApiKey, '']], !Not [!Equals [!Ref SummarizationLLMThirdPartyApiKey, undefined]]]
+  ShouldTestBedrockModelId: !Or [
+    !Equals [!Ref CallSummarization, 'BEDROCK'], 
+    !Equals [!Ref CallSummarization, "BEDROCK+TCA"],
+    !Equals [!Ref GenAIQuery, 'BEDROCK'],]
+  ShouldTestGenAIQueryBedrockModelId: !Equals [!Ref GenAIQuery, 'BEDROCK']
+  ShouldTestSummarizationBedrockModelId: !Or [
+    !Equals [!Ref CallSummarization, 'BEDROCK'],
+    !Equals [!Ref CallSummarization, "BEDROCK+TCA"],
+  ]
+
+Rules:
+  GuiEnabledWithKenda:
+    RuleCondition: !Not [!Equals [!Ref EnableTranscriptKendraSearch, 'No']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref EnableGui, "false"]]
+        AssertDescription: If Kendra is enabled, GUI must also be enabled
+
+Resources:
+  ########################################################
+  # S3 buckets
+  # TODO: Versioning? Lifecycle Policies? Access Logging?
+  ########################################################
+
+  BulkUploadBucket:
+    Condition: ShouldCreateBulkUploadBucket
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain 
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  InputBucket:
+    Condition: ShouldCreateInputBucket
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain 
+    
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: StorageClassAndRetention
+            Status: Enabled
+            ExpirationInDays: !Ref RetentionDays
+            Transitions:
+              - TransitionInDays: 1
+                StorageClass: INTELLIGENT_TIERING
+
+  OutputBucket:
+    Condition: ShouldCreateOutputBucket
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain 
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: LifecycleRule
+            Status: Enabled
+            ExpirationInDays: !Ref RetentionDays
+            Transitions:
+              - TransitionInDays: 1
+                StorageClass: INTELLIGENT_TIERING
+
+  SupportFilesBucket:
+    Condition: ShouldCreateSupportFilesBucket
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain 
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  ########################################################
+  # Kendra Index
+  ########################################################
+  KendraIndexRole:
+    Type: 'AWS::IAM::Role'
+    Condition: ShouldEnableKendraSearch
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: kendra.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'cloudwatch:namespace': 'Kendra'
+                Action:
+                  - 'cloudwatch:PutMetricData'
+              - Effect: Allow
+                Resource: '*'
+                Action: 'logs:DescribeLogGroups'
+              - Effect: Allow
+                Resource: !Sub
+                  - 'arn:aws:logs:${region}:${account}:log-group:/aws/kendra/*'
+                  - region: !Ref 'AWS::Region'
+                    account: !Ref 'AWS::AccountId'
+                Action: 'logs:CreateLogGroup'
+              - Effect: Allow
+                Resource: !Sub
+                  - 'arn:aws:logs:${region}:${account}:log-group:/aws/kendra/*:log-stream:*'
+                  - region: !Ref 'AWS::Region'
+                    account: !Ref 'AWS::AccountId'
+                Action: 
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+          PolicyName: KendraMediaIndexPolicy
+
+  KendraIndex:
+    Type: 'AWS::Kendra::Index'
+    Condition: ShouldEnableKendraSearch
+    Properties:
+      CapacityUnits: !If 
+          - ShouldCreateKendraIndexDeveloperEdition
+          - !Ref AWS::NoValue
+          -
+            QueryCapacityUnits: !Ref QueryCapacityUnits
+            StorageCapacityUnits: !Ref StorageCapacityUnits
+      Description: PCA transcript index
+      Edition:
+          !If
+          - ShouldCreateKendraIndexDeveloperEdition
+          - 'DEVELOPER_EDITION'
+          - 'ENTERPRISE_EDITION'
+      Name: !Join
+        - ''
+        - - !Ref 'AWS::StackName'
+          - '-Index'
+      RoleArn: !GetAtt KendraIndexRole.Arn
+      DocumentMetadataConfigurations:
+        - Name: ANALYSIS_URI
+          Search: 
+            Displayable: true
+          Type: 'STRING_VALUE'
+        - Name: DATETIME
+          Search: 
+            Displayable: true
+            Facetable: true
+          Relevance:
+            Freshness: true
+          Type: 'DATE_VALUE'
+        - Name: GUID
+          Search: 
+            Displayable: true
+            Searchable: true
+          Type: 'STRING_VALUE'
+        - Name: AGENT
+          Search:
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_VALUE'
+        - Name: DURATION
+          Search: 
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_VALUE'
+        - Name: ENTITY_PERSON
+          Search: 
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'        
+        - Name: ENTITY_LOCATION
+          Search: 
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'
+        - Name: ENTITY_ORGANIZATION
+          Search: 
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'
+        - Name: ENTITY_COMMERCIAL_ITEM
+          Search: 
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'
+        - Name: ENTITY_EVENT
+          Search: 
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'
+        - Name: ENTITY_DATE
+          Search:
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'
+        - Name: ENTITY_QUANTITY
+          Search:
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'
+        - Name: ENTITY_TITLE
+          Search:
+            Displayable: true
+            Facetable: true
+          Type: 'STRING_LIST_VALUE'
+
+  ########################################################
+  # If Bedrock Models are selected, verify that Bedrock 
+  # is available in the region, and that models are enabled
+  ########################################################
+
+  TestBedrockModelFunctionRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldTestBedrockModelId
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "bedrock:InvokeModel"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:custom-model/*"
+          PolicyName: BedrockPolicy
+
+  TestBedrockModelFunction:
+    Type: AWS::Lambda::Function
+    Condition: ShouldTestBedrockModelId
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'TestBedrockModelFunctionRole.Arn'
+      Runtime: python3.11
+      Timeout: 60
+      MemorySize: 128
+      Code: 
+        ZipFile: !Sub |
+          import cfnresponse
+          import json
+          import subprocess
+          import os
+          import sys
+          print("install latest boto3 to get bedrock service support")
+          subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--target', '/tmp', 'boto3'])
+          sys.path.insert(0,'/tmp')
+          import boto3
+
+          # Defaults
+          AWS_REGION = os.environ["AWS_REGION_OVERRIDE"] if "AWS_REGION_OVERRIDE" in os.environ else os.environ["AWS_REGION"]
+          ENDPOINT_URL = os.environ.get("ENDPOINT_URL", f'https://bedrock-runtime.{AWS_REGION}.amazonaws.com')
+          DEFAULT_MAX_TOKENS = 128
+
+          def get_request_body(modelId, parameters, prompt):
+              provider = modelId.split(".")[0]
+              request_body = None
+              if provider == "anthropic":
+                  if 'claude-3' in modelId:
+                      request_body = {
+                          "max_tokens": DEFAULT_MAX_TOKENS,
+                          "messages": [{"role": "user", "content": prompt}],
+                          "anthropic_version": "bedrock-2023-05-31"
+                      }
+                  else:    
+                      request_body = {
+                          "prompt": prompt,
+                          "max_tokens_to_sample": DEFAULT_MAX_TOKENS
+                      } 
+
+                  request_body.update(parameters)
+              elif provider == "ai21":
+                  request_body = {
+                      "prompt": prompt,
+                      "maxTokens": DEFAULT_MAX_TOKENS
+                  }
+                  request_body.update(parameters)
+              elif provider == "amazon":
+                  textGenerationConfig = {
+                      "maxTokenCount": DEFAULT_MAX_TOKENS
+                  }
+                  textGenerationConfig.update(parameters)
+                  request_body = {
+                      "inputText": prompt,
+                      "textGenerationConfig": textGenerationConfig
+                  }
+              else:
+                  raise Exception("Unsupported provider: ", provider)
+              return request_body
+
+          def get_generate_text(modelId, response):
+              provider = modelId.split(".")[0]
+              generated_text = None
+              if provider == "anthropic":
+                  if 'claude-3' in modelId:
+                      response_raw = json.loads(response.get("body").read().decode())
+                      generated_text = response_raw.get('content')[0].get('text')
+          
+                  else:
+                      response_body = json.loads(response.get("body").read().decode())
+                      generated_text = response_body.get("completion")
+              elif provider == "ai21":
+                  response_body = json.loads(response.get("body").read())
+                  generated_text = response_body.get("completions")[0].get("data").get("text")
+              elif provider == "amazon":
+                  response_body = json.loads(response.get("body").read())
+                  generated_text = response_body.get("results")[0].get("outputText")
+              else:
+                  raise Exception("Unsupported provider: ", provider)
+              return generated_text
+
+          def call_llm(parameters, prompt):
+              modelId = parameters.pop("modelId")
+              body = get_request_body(modelId, parameters, prompt)
+              print("ModelId", modelId, "-  Body: ", body)
+              client = boto3.client(service_name='bedrock-runtime', region_name=AWS_REGION, endpoint_url=ENDPOINT_URL)
+              response = client.invoke_model(body=json.dumps(body), modelId=modelId, accept='application/json', contentType='application/json')
+              generated_text = get_generate_text(modelId, response)
+              return generated_text
+
+          def lambda_handler(event, context):
+              print("Event: ", json.dumps(event))
+              global client
+              status = cfnresponse.SUCCESS
+              responseData = {}
+              reason = "Success"
+              modelId = ""
+              if event['RequestType'] != 'Delete':
+                  prompt = "\n\nHuman: Why is the sky blue?\n\nAssistant:"
+                  try:
+                      # Test LLMModel
+                      llmModelId = event['ResourceProperties'].get('LLMModelId', '')
+                      modelId = llmModelId
+                      parameters = {
+                          "modelId": modelId,
+                          "temperature": 0
+                      }
+                      print(f"Testing {modelId}")
+                      call_llm(parameters, prompt)            
+                  except Exception as e:
+                      status = cfnresponse.FAILED
+                      reason = f"Exception thrown testing ModelId='{modelId}'. Check that Amazon Bedrock is available in your region, and that model is activated in your Amazon Bedrock account - {e}"
+              print(f"Status: {status}, Reason: {reason}")        
+              cfnresponse.send(event, context, status, responseData, reason=reason)
+
+  TestGenAIQueryBedrockModelId:
+    Type: Custom::TestGenAIQueryBedrockModelId
+    Condition: ShouldTestGenAIQueryBedrockModelId
+    Properties:
+      ServiceToken: !GetAtt TestBedrockModelFunction.Arn
+      LLMModelId: !Ref GenAIQueryBedrockModelId
+
+  TestSummarizationBedrockModelId:
+    Type: Custom::SummarizationBedrockModelId
+    Condition: ShouldTestSummarizationBedrockModelId
+    Properties:
+      ServiceToken: !GetAtt TestBedrockModelFunction.Arn
+      LLMModelId: !Ref SummarizationBedrockModelId
+
+  LLMPromptConfigure:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: pca-server/cfn/lib/llm.template
+
+  ########################################################
+  # SSM Stack
+  ########################################################
+  SSM:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: LLMPromptConfigure
+    Properties:
+      TemplateURL: pca-ssm/cfn/ssm.template
+      Parameters:
+        BulkUploadBucketName:
+          !If
+          - ShouldCreateBulkUploadBucket
+          - !Ref BulkUploadBucket
+          - !Ref BulkUploadBucketName
+        BulkUploadMaxDripRate: !Ref BulkUploadMaxDripRate
+        BulkUploadMaxTranscribeJobs: !Ref BulkUploadMaxTranscribeJobs
+        CallSummarization: !Ref CallSummarization
+        ComprehendLanguages: !Ref ComprehendLanguages
+        ContentRedactionLanguages: !Ref ContentRedactionLanguages
+        ConversationLocation: !Ref ConversationLocation
+        EntityRecognizerEndpoint: !Ref EntityRecognizerEndpoint
+        EntityStringMap: !Ref EntityStringMap
+        EntityThreshold: !Ref EntityThreshold
+        EntityTypes: !Ref EntityTypes
+        InputBucketAudioPlayback: !Ref InputBucketAudioPlayback
+        InputBucketFailedTranscriptions: !Ref InputBucketFailedTranscriptions
+        InputBucketName: 
+          !If
+          - ShouldCreateInputBucket
+          - !Ref InputBucket
+          - !Ref InputBucketName        
+        InputBucketRawAudio: !Ref InputBucketRawAudio
+        InputBucketOrigTranscripts: !Ref InputBucketOrigTranscripts
+        MaxSpeakers: !Ref MaxSpeakers
+        MinSentimentNegative: !Ref MinSentimentNegative
+        MinSentimentPositive: !Ref MinSentimentPositive
+        OutputBucketName: 
+          !If
+          - ShouldCreateOutputBucket
+          - !Ref OutputBucket
+          - !Ref OutputBucketName 
+        OutputBucketTranscribeResults: !Ref OutputBucketTranscribeResults
+        OutputBucketParsedResults: !Ref OutputBucketParsedResults
+        SpeakerNames: !Ref SpeakerNames
+        SpeakerSeparationType: !Ref SpeakerSeparationType
+        StepFunctionName: !Ref StepFunctionName
+        BulkUploadStepFunctionName: !Ref BulkUploadStepFunctionName
+        SupportFilesBucketName: 
+          !If
+          - ShouldCreateSupportFilesBucket
+          - !Ref SupportFilesBucket
+          - !Ref SupportFilesBucketName
+        TranscribeLanguages: !Ref TranscribeLanguages
+        TranscribeApiMode: !Ref TranscribeApiMode
+        TelephonyCTRType: !Ref TelephonyCTRType
+        TelephonyCTRFileSuffix: !Ref TelephonyCTRFileSuffix
+        CallRedactionTranscript: !Ref CallRedactionTranscript
+        CallRedactionAudio: !Ref CallRedactionAudio
+        VocabFilterName: !Ref VocabFilterName
+        VocabFilterMode: !Ref VocabFilterMode
+        VocabularyName: !Ref VocabularyName
+        CustomLangModelName: !Ref CustomLangModelName
+        FilenameDatetimeRegex: !Ref FilenameDatetimeRegex
+        FilenameDatetimeFieldMap: !Ref FilenameDatetimeFieldMap
+        FilenameGUIDRegex: !Ref FilenameGUIDRegex
+        FilenameAgentRegex: !Ref FilenameAgentRegex
+        FilenameCustRegex: !Ref FilenameCustRegex
+        KendraIndexId:
+          !If
+          - ShouldEnableKendraSearch
+          - !Ref KendraIndex
+          - 'None'
+        # WebUri: !GetAtt PCAUI.Outputs.WebUri
+        DatabaseName: !Ref DatabaseName
+
+  PythonUtilsLayer:
+    DependsOn: SSM
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: pca-server/cfn/lib/python-utilities.template
+
+  BedrockBoto3Layer:
+    Type: AWS::CloudFormation::Stack
+    # Condition: ShouldDeployBedrockBoto3Layer
+    Properties:
+      TemplateURL: pca-boto3-bedrock/template.yaml
+
+  LLMThirdPartyApiKeySecret:
+    Condition: ShouldDeployLLMThirdPartyApiKey
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: API Key
+      Name: !Sub '${AWS::StackName}-ThirdPartyApiKey'
+      SecretString: !Ref SummarizationLLMThirdPartyApiKey
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W77
+            reason: No requirement for custom CMK, secret will not be shared cross-account.
+
+  PCAServer:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SSM
+    Properties:
+      TemplateURL: pca-server/cfn/pca-server.template
+      Parameters:
+        ffmpegDownloadUrl: !Ref ffmpegDownloadUrl
+        CallSummarization: !Ref CallSummarization
+        SummarizationBedrockModelId: !Ref SummarizationBedrockModelId
+        SummarizationSageMakerInitialInstanceCount: !Ref SummarizationSageMakerInitialInstanceCount
+        SummarizationLLMThirdPartyApiKey: !If 
+          - ShouldDeployLLMThirdPartyApiKey
+          - !Ref LLMThirdPartyApiKeySecret
+          - ''
+        SummarizationLambdaFunctionArn: !Ref SummarizationLambdaFunctionArn
+        PyUtilsLayerArn: !GetAtt PythonUtilsLayer.Outputs.PyUtilsLayer
+        Boto3LayerArn: !If
+          - ShouldDeployBedrockBoto3Layer
+          - !GetAtt BedrockBoto3Layer.Outputs.Boto3Layer
+          - ''
+        LLMTableName: !GetAtt LLMPromptConfigure.Outputs.LLMTableName
+
+  PCAUI:
+    Type: AWS::CloudFormation::Stack
+    Condition: ShouldEnableGui
+    Properties:
+      TemplateURL: pca-ui/cfn/pca-ui.template
+      Parameters:
+        AdminUsername: !Ref AdminUsername
+        AdminEmail: !Ref AdminEmail
+        MainStackName: !Ref AWS::StackName
+        AudioBucket:
+          !If
+          - ShouldCreateInputBucket
+          - !Ref InputBucket
+          - !Ref InputBucketName 
+        AudioBucketPrefix: !Ref InputBucketRawAudio
+        DataBucket:
+          !If
+          - ShouldCreateOutputBucket
+          - !Ref OutputBucket
+          - !Ref OutputBucketName
+        DataPrefix: !Ref OutputBucketParsedResults
+        Environment: !Ref Environment
+        GenAIQueryType: !Ref GenAIQuery
+        GenAIQueryBedrockModelId: !Ref GenAIQueryBedrockModelId
+        FetchTranscriptArn: !GetAtt PCAServer.Outputs.FetchTranscriptArn
+        SummarizerArn: !GetAtt PCAServer.Outputs.SummarizerArn
+        StepFunctionName: !Ref StepFunctionName
+        LLMThirdPartyApiKey: !If 
+          - ShouldDeployLLMThirdPartyApiKey
+          - !Ref LLMThirdPartyApiKeySecret
+          - ''
+        PyUtilsLayerArn: !GetAtt PythonUtilsLayer.Outputs.PyUtilsLayer
+        Boto3LayerArn: !If
+          - ShouldDeployBedrockBoto3Layer
+          - !GetAtt BedrockBoto3Layer.Outputs.Boto3Layer
+          - ''
+        LLMTableName: !GetAtt LLMPromptConfigure.Outputs.LLMTableName
+
+  MediaSearchKendraFinder:
+    Type: AWS::CloudFormation::Stack
+    Condition: ShouldEnableKendraSearch
+    Properties:
+      TemplateURL: build/pca-mediasearch-finder.yaml
+      Parameters:
+        AdminEmail: !Ref AdminEmail
+        KendraIndexId: !Ref KendraIndex
+        MediaBucketNames:
+          !If
+          - ShouldCreateInputBucket
+          - !Ref InputBucket
+          - !Ref InputBucketName
+
+  PcaDashboards:
+    Type: AWS::CloudFormation::Stack
+    Condition: ShouldDeployPcaDashboards
+    DependsOn: PCAServer
+    Properties:
+      TemplateURL: build/pca-dashboards.yaml
+      Parameters:
+        PcaGlueCatalogDatabaseName: !Ref DatabaseName
+        PcaOutputBucket: 
+          !If
+          - ShouldCreateOutputBucket
+          - !Ref OutputBucket
+          - !Ref OutputBucketName
+        PcaWebAppCallPathPrefix: !Sub "dashboard/${OutputBucketParsedResults}/"
+        PcaWebAppHostAddress: !If
+          - ShouldEnableGui
+          - !Select [1, !Split ["//", !GetAtt PCAUI.Outputs.WebUri]]
+          - "pca.ui.bot.enabled"
+
+  CopySamples:
+    Type: AWS::CloudFormation::Stack
+    Condition: ShouldLoadSampleFiles
+    Properties:
+      TemplateURL: pca-samples/copy-samples.template
+      Parameters:
+        DependsOnPCAServer: !Ref PCAServer
+        DependsOnPCAUI: !If [ShouldEnableGui, !Ref PCAUI, !Ref AWS::NoValue]
+        DependsOnPCADashboards: !If
+          - ShouldDeployPcaDashboards
+          - !Ref PcaDashboards
+          - !Ref AWS::NoValue
+
+  # Custom resource to check that QuickSight has been enabled - if not, fail fast and prevent downstream failures  
+
+  QuickSightEnabledCheckFunctionRole:
+    Type: "AWS::IAM::Role"
+    Condition: ShouldDeployPcaDashboards
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: s3-input-bucket-write-policy
+          PolicyDocument:
+            Statement:
+              Effect: Allow
+              Action:
+                - quicksight:ListDashboards
+              Resource: "*"
+
+  QuickSightEnabledCheckFunction:
+    Type: AWS::Lambda::Function
+    Condition: ShouldDeployPcaDashboards
+    Properties:
+      Handler: index.handler
+      Runtime: python3.11
+      Role: !GetAtt QuickSightEnabledCheckFunctionRole.Arn
+      Code: 
+        ZipFile: !Sub |
+          import cfnresponse
+          import boto3
+          def handler(event, context):
+            print(event)
+            client = boto3.client('quicksight')
+            status = cfnresponse.SUCCESS
+            reason = f"QuickSight is enabled - OK"
+            if event['RequestType'] != "Delete":
+              try:
+                response = client.list_dashboards(
+                    AwsAccountId='${AWS::AccountId}',
+                    )
+              except Exception as e:
+                print(e)
+                status = cfnresponse.FAILED
+                reason = f"No Amazon QuickSight account. To deploy PCA with Dashboards enabled, you must first create an account in the Amazon QuickSight console => {e}"
+            else:
+              reason = f"Request type is {event['RequestType']} - skipping"
+            cfnresponse.send(event, context, status, {}, reason=reason) 
+
+  IsQuickSightEnabled:
+    Type: Custom::QuickSightCheck
+    Condition: ShouldDeployPcaDashboards
+    Properties:
+      ServiceToken: !GetAtt QuickSightEnabledCheckFunction.Arn
+
+Outputs:
+
+  BulkUploadBucket:
+    Description: S3 Bucket for uploading input audio files for alternate bulk upload workflow
+    Value:
+          !If
+          - ShouldCreateBulkUploadBucket
+          - !Ref BulkUploadBucket
+          - !Ref BulkUploadBucketName
+
+  InputBucket:
+    Description: S3 Bucket for uploading input audio files
+    Value:
+      !If
+      - ShouldCreateInputBucket
+      - !Ref InputBucket
+      - !Ref InputBucketName  
+    
+  InputBucketPrefix:
+    Description: S3 Bucket prefix/folder for uploading input audio files
+    Value: !Ref InputBucketRawAudio
+
+  InputBucketTranscriptPrefix:
+    Description: S3 Bucket prefix/folder for uploading input transcripts
+    Value: !Ref InputBucketOrigTranscripts
+  
+  InputBucketPlaybackAudioPrefix:
+    Description: S3 Bucket prefix/folder for audio used for playboack from browser
+    Value: !Ref InputBucketAudioPlayback
+
+  OutputBucket:
+    Description: S3 Bucket where Transcribe output files are delivered
+    Value:
+      !If
+      - ShouldCreateOutputBucket
+      - !Ref OutputBucket
+      - !Ref OutputBucketName  
+    
+  OutputBucketPrefix:
+    Description: S3 Bucket path where Transcribe output files are delivered
+    Value: !Ref OutputBucketParsedResults
+
+  SupportFilesBucket:
+    Description: S3 Bucket bucket that hold supporting files, such as the file-based entity recognition mapping files
+    Value:
+      !If
+      - ShouldCreateSupportFilesBucket
+      - !Ref SupportFilesBucket
+      - !Ref SupportFilesBucketName  
+    
+  TranscriptionMediaSearchFinderURL:
+    Description: Transcript Search Application link
+    Value:
+      !If
+      - ShouldEnableKendraSearch
+      - !GetAtt MediaSearchKendraFinder.Outputs.MediaSearchFinderURL
+      - "Not enabled"
+ 
+  WebAppURL:
+    Description: PCA Web Application link
+    Value:
+      !If
+      - ShouldEnableGui
+      - !GetAtt PCAUI.Outputs.WebUri
+      - "PCA Web UI not enabled - stack param 'EnableGui'"
+    
+  WebAdminUsername:
+    Description: PCA admin user
+    Value: !Ref AdminUsername
+
+  RolesForKMSKey:
+    Description: When using KMS key to encrypt S3 input/output buckets, KMS key must grant access to these roles.
+    Value: !Join
+      - ', '
+      - - !If [ShouldEnableGui, !Sub '${PCAUI.Outputs.RolesForKMSKey}', !Ref AWS::NoValue]
+        - !Sub '${PCAServer.Outputs.RolesForKMSKey}'
+        - !If [ShouldLoadSampleFiles, !Sub '${CopySamples.Outputs.RolesForKMSKey}', !Ref AWS::NoValue]
+
+  PcADashboards:
+    Description: See PCA Dashboards nested stack outputs for additional information. Refer to blog - http://www.amazon.com/pca-dashboards.
+    Value:
+      !If
+      - ShouldDeployPcaDashboards
+      - !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudformation/home?region=${AWS::Region}#/stacks/outputs?stackId=${PcaDashboards}"
+      - "PCA Dashboards not enabled - stack param 'EnablePcaDashboards'"
+
+  FetchTranscriptArn:
+    Description: Lambda function arn that will generate a string of the entire transcript for custom Lambda functions to use.
+    Value: !GetAtt PCAServer.Outputs.FetchTranscriptArn
+
+  LLMPromptSummaryTemplate:
+    Description: The LLM summary prompt template in DynamoDB Table - open to customise summary prompts.
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/dynamodbv2/home?region=${AWS::Region}#edit-item?itemMode=2&pk=LLMPromptSummaryTemplate&route=ROUTE_ITEM_EXPLORER&sk=&table=${LLMPromptConfigure.Outputs.LLMTableName}"
+
+  LLMPromptQueryTemplate:
+    Description: The LLM query prompt template in DynamoDB Table - open to customise query prompts.
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/dynamodbv2/home?region=${AWS::Region}#edit-item?itemMode=2&pk=LLMPromptQueryTemplate&route=ROUTE_ITEM_EXPLORER&sk=&table=${LLMPromptConfigure.Outputs.LLMTableName}"
